@@ -12167,6 +12167,7 @@ function DealDetailPage({ deal, deals, setDeals, onClose, apiCfg, liveP, setMod,
     }
   ));
 }
+var DEAL_STAGES = ["Prospecting", "Negotiating", "Contracted", "Produced", "Shipped", "Delivered", "Paid", "Cancelled"];
 function PortfolioTracker({ apiCfg, userId, activeDeal, setActiveDeal: setActiveDeal2, setMod, setSelProd, selCountry, setSelCountry, liveP }) {
   var DK = "tospro_deals_v4";
   var _ld = function() {
