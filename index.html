@@ -12203,6 +12203,7 @@ function PortfolioTracker({ apiCfg, userId, activeDeal, setActiveDeal: setActive
   const [aiSummary, setAiSummary] = useState(null);
   const [loadingAI, setLoadingAI] = useState(false);
   const [tab, setTab] = useState("pipeline");
+  const [detailDeal, setDetailDeal] = useState(null);
   const [docHistory, setDocHistory] = useState(function() {
     try {
       var x = localStorage.getItem("tospro_doc_history_v4");
