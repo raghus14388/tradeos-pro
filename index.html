@@ -14,7 +14,7 @@
 <body>
 <div id="root"></div>
 <script type="text/babel" data-type="module">
-const { useState, useEffect, useCallback, useRef } = React;
+const { useState, useEffect, useCallback } = React;
 
 const SB_URL = "https://llugddxjqawuqyuslvox.supabase.co";
 const SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxsdWdkZHhqcWF3dXF5dXNsdm94Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQxOTMxMDEsImV4cCI6MjA4OTc2OTEwMX0.3gH0OZRqVmGyPR4uoig5JuLPoHyHnH5Kre_0yHxNTqg";
@@ -129,6 +129,30 @@ const css = `
 .mu{color:var(--t3);font:12px var(--m);text-align:center;margin-top:8px}
 @media(max-width:768px){.mg,.dg{grid-template-columns:repeat(2,1fr)}.s3{grid-template-columns:1fr}.Oh h1{font-size:26px}.bmg{grid-template-columns:1fr 1fr}}
 `;
+
+/* ═══ ONBOARDING ═══ */
+function Onboarding({ onDone }) {
+  const [n, sN] = useState(""); const [c, sC] = useState(""); const [st, sSt] = useState("Karnataka");
+  const [cap, sCap] = useState(1000000); const [risk, sR] = useState("moderate"); const [tl, sTl] = useState(12); const [ld, sLd] = useState(false);
+  const go = async () => { if (!n.trim() || !c.trim()) return; sLd(true);
+    const r = await sbPost("traders", { name: n.trim(), city: c.trim(), state: st, available_capital: cap, risk_appetite: risk, timeline_months: tl });
+    if (r && r.length) onDone(r[0]); sLd(false); };
+  return (<div className="O"><div className="Oh"><h1>Capital in.<br />Strategy out.</h1><p>Enter your capital. Our engine finds the highest-return trade lanes and executes end-to-end.</p></div>
+    <div className="Of">
+      <div className="fg"><label className="fl">Your Name</label><input className="fi" placeholder="e.g. Raghav" value={n} onChange={e => sN(e.target.value)} /></div>
+      <div className="fg"><label className="fl">Available Capital</label><div className="cd">{fI(cap)}</div>
+        <input type="range" className="cs" min={200000} max={5000000} step={50000} value={cap} onChange={e => sCap(+e.target.value)} />
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 3 }}><span style={{ font: "10px var(--m)", color: "var(--t3)" }}>₹2L</span><span style={{ font: "10px var(--m)", color: "var(--t3)" }}>₹50L</span></div></div>
+      <div className="fg"><label className="fl">Risk Appetite</label><div className="ro">
+        {["conservative", "moderate", "aggressive"].map(r => <button key={r} className={`rb ${risk === r ? "a" : ""}`} onClick={() => sR(r)}>{r === "conservative" ? "🛡 Safe" : r === "moderate" ? "⚖️ Balanced" : "🚀 Aggressive"}</button>)}</div></div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <div className="fg"><label className="fl">City</label><input className="fi" placeholder="e.g. Bengaluru" value={c} onChange={e => sC(e.target.value)} /></div>
+        <div className="fg"><label className="fl">State</label><select className="fs" value={st} onChange={e => sSt(e.target.value)}>{STATES.map(s => <option key={s}>{s}</option>)}</select></div></div>
+      <div className="fg"><label className="fl">Timeline</label><select className="fs" value={tl} onChange={e => sTl(+e.target.value)}>
+        <option value={6}>6 months — Sprint</option><option value={12}>12 months — Standard</option><option value={24}>24 months — Long play</option></select></div>
+      <button className="sb" onClick={go} disabled={ld || !n.trim() || !c.trim()}>{ld ? "Analyzing markets..." : "Find My Trade Lanes →"}</button>
+    </div></div>);
+}
 
 /* ═══ BUYER MODULE ═══ */
 function BuyerMod({ deal, lane, onLink }) {
