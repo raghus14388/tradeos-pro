@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>TradeOS Autopilot — Autonomous Trade Execution</title>
-<meta name="description" content="Capital in, strategy out. The autonomous trade execution system for Indian exporters.">
+<meta name="description" content="Capital in, strategy out. Real data + AI intelligence for Indian exporters.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23f59e0b'/><text x='50%' y='55%' font-family='monospace' font-size='20' font-weight='700' fill='%23000' text-anchor='middle' dominant-baseline='middle'>T</text></svg>">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -18,12 +18,181 @@ const { useState, useEffect, useCallback } = React;
 
 const SB_URL = "https://llugddxjqawuqyuslvox.supabase.co";
 const SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxsdWdkZHhqcWF3dXF5dXNsdm94Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQxOTMxMDEsImV4cCI6MjA4OTc2OTEwMX0.3gH0OZRqVmGyPR4uoig5JuLPoHyHnH5Kre_0yHxNTqg";
-const FX = 85;
+let FX = 85; // Will be updated from live data
+const loadLiveFX = async () => {
+  try {
+    const r = await sbGet("fx_rates", "?base_currency=eq.USD&target_currency=eq.INR&order=recorded_at.desc&limit=1");
+    if (r?.[0]?.spot_rate) { FX = parseFloat(r[0].spot_rate); }
+  } catch {}
+};
+const refreshData = async () => {
+  try {
+    await fetch(`${SB_URL}/functions/v1/ingest-fx-rates`, { method: "POST" });
+    await fetch(`${SB_URL}/functions/v1/ingest-mandi-prices`, { method: "POST" });
+    await loadLiveFX();
+  } catch (e) { console.error("Refresh failed:", e); }
+};
+loadLiveFX(); // Load on startup
 const sbGet = async (t, p = "") => { const r = await fetch(`${SB_URL}/rest/v1/${t}${p}`, { headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` } }); return r.json(); };
 const sbPost = async (t, d) => { const r = await fetch(`${SB_URL}/rest/v1/${t}`, { method: "POST", headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json", Prefer: "return=representation" }, body: JSON.stringify(d) }); return r.json(); };
 const sbPatch = async (t, id, d) => { const r = await fetch(`${SB_URL}/rest/v1/${t}?id=eq.${id}`, { method: "PATCH", headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json", Prefer: "return=representation" }, body: JSON.stringify(d) }); return r.json(); };
 const fI = n => { if (n >= 1e7) return `₹${(n / 1e7).toFixed(1)}Cr`; if (n >= 1e5) return `₹${(n / 1e5).toFixed(1)}L`; return `₹${Math.round(n).toLocaleString("en-IN")}`; };
 const jp = v => { try { return typeof v === "string" ? JSON.parse(v) : v || []; } catch { return []; } };
+
+/* ═══ INTELLIGENCE LAYER ═══ */
+const sbRpc = async (fn, params = {}) => {
+  const r = await fetch(`${SB_URL}/rest/v1/rpc/${fn}`, {
+    method: "POST", headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify(params)
+  });
+  return r.json();
+};
+
+const cacheGet = async (key) => {
+  try {
+    const r = await sbGet("intelligence_cache", `?cache_key=eq.${encodeURIComponent(key)}&expires_at=gt.${new Date().toISOString()}&limit=1`);
+    return r?.[0]?.result || null;
+  } catch { return null; }
+};
+
+const cacheSet = async (key, type, result, product, destination) => {
+  try {
+    await fetch(`${SB_URL}/rest/v1/intelligence_cache`, {
+      method: "POST", headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json", Prefer: "resolution=merge-duplicates" },
+      body: JSON.stringify({ cache_key: key, query_type: type, product, destination, result, expires_at: new Date(Date.now() + 7 * 86400000).toISOString() })
+    });
+  } catch (e) { console.error("Cache set failed:", e); }
+};
+
+const aiQuery = async (prompt, useWebSearch = true) => {
+  try {
+    const body = { model: "claude-sonnet-4-20250514", max_tokens: 2000, messages: [{ role: "user", content: prompt }] };
+    if (useWebSearch) body.tools = [{ type: "web_search_20250305", name: "web_search" }];
+    const r = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const data = await r.json();
+    const text = data.content?.filter(c => c.type === "text").map(c => c.text).join("\n") || "";
+    return text;
+  } catch (e) { console.error("AI query failed:", e); return null; }
+};
+
+const aiQueryJSON = async (prompt, useWebSearch = true) => {
+  const fullPrompt = prompt + "\n\nRespond ONLY with valid JSON. No markdown, no backticks, no explanation. Just the JSON object/array.";
+  const text = await aiQuery(fullPrompt, useWebSearch);
+  if (!text) return null;
+  try {
+    const clean = text.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+    return JSON.parse(clean);
+  } catch { return null; }
+};
+
+// Smart buyer finder: cache → DB → AI+web search
+const findBuyersLive = async (product, country) => {
+  const key = `buyers:${product}:${country}`.toLowerCase().replace(/\s+/g, "_");
+
+  // 1. Check cache
+  const cached = await cacheGet(key);
+  if (cached) return { buyers: cached, source: "cache" };
+
+  // 2. Check DB (importer_records + seeded buyers)
+  const dbBuyers = await sbGet("buyers", `?country=eq.${country}&order=risk_score.desc`);
+  const importers = await sbGet("importer_records", `?importer_country=eq.${country}&order=value_usd.desc.nullslast&limit=10`);
+
+  // 3. If DB has good data, use it
+  const relevantDB = (dbBuyers || []).filter(b => {
+    const prods = jp(b.products_imported).map(p => p.toLowerCase()).join(" ");
+    return product.toLowerCase().split(/[\s(]+/).some(w => w.length > 3 && prods.includes(w));
+  });
+
+  if (relevantDB.length >= 3) return { buyers: relevantDB, source: "database" };
+
+  // 4. Fall back to AI + web search for real buyers
+  const aiResult = await aiQueryJSON(`Search the web and find real companies that import ${product} into ${country}. 
+Find actual company names, cities, and what they import. Use ImportYeti, trade directories, and company databases.
+Return a JSON array of objects with these fields: 
+{"company_name": "", "city": "", "products": "", "estimated_volume": "", "payment_likely": "", "risk_notes": "", "source_url": ""}
+Find at least 5 real companies. Every company must be a REAL verifiable business.`);
+
+  if (aiResult && Array.isArray(aiResult) && aiResult.length > 0) {
+    await cacheSet(key, "buyers", aiResult, product, country);
+    return { buyers: aiResult.map((b, i) => ({
+      id: `ai_${i}`, company_name: b.company_name, country, city: b.city,
+      products_imported: JSON.stringify([b.products || product]),
+      annual_volume_tons: 0, avg_purchase_price_usd: 0,
+      payment_preference: b.payment_likely || "TBD", risk_score: 50,
+      notes: b.risk_notes || "", verified: false, source: "ai_web_search",
+      source_url: b.source_url || ""
+    })), source: "ai_live" };
+  }
+
+  return { buyers: relevantDB.length > 0 ? relevantDB : (dbBuyers || []).slice(0, 5), source: "database_fallback" };
+};
+
+// Smart compliance: DB hs_codes + country_profiles → AI fallback
+const getComplianceLive = async (hsCode, country) => {
+  // 1. Try DB first
+  const compliance = await sbRpc("get_compliance", { p_hs_code: hsCode, p_country: country });
+  if (compliance && compliance.length > 0 && compliance[0].hs_description) {
+    return { data: compliance[0], source: "database" };
+  }
+
+  // 2. Try country profile alone
+  const cp = await sbGet("country_profiles", `?country_name=eq.${country}&limit=1`);
+
+  // 3. AI fallback for unknown HS codes
+  const aiResult = await aiQueryJSON(`For exporting product with HS code ${hsCode} from India to ${country}:
+1. What certifications are required? List each with: name, issuing authority, estimated days to obtain, mandatory (true/false)
+2. What are the destination country's import requirements?
+3. What is the estimated duty rate?
+Return JSON: {"certifications": [{"name":"","authority":"","days":0,"mandatory":true}], "dest_requirements": [""], "duty_pct": 0, "notes": ""}`);
+
+  return { data: { ...aiResult, country_profile: cp?.[0] || null }, source: "ai_generated" };
+};
+
+// Smart trade lane generator: for ANY product + destination
+const analyzeTradeLane = async (product, destination, capital) => {
+  const key = `lane:${product}:${destination}:${capital}`.toLowerCase().replace(/\s+/g, "_");
+  const cached = await cacheGet(key);
+  if (cached) return { data: cached, source: "cache" };
+
+  const result = await aiQueryJSON(`You are a trade economics analyst. Analyze this export trade lane from India using real web data:
+
+Product: ${product}
+Destination: ${destination}
+Available capital: ₹${(capital/100000).toFixed(1)} lakhs (INR ${capital})
+
+Search the web for REAL current data and return JSON:
+{
+  "product_name": "${product}",
+  "hs_code": "",
+  "destination_country": "${destination}",
+  "avg_procurement_cost_per_kg_inr": 0,
+  "avg_fob_price_per_kg_usd": 0,
+  "estimated_margin_pct": 0,
+  "min_viable_quantity_kg": 0,
+  "demand_trend": "growing|stable|declining",
+  "demand_growth_pct": 0,
+  "india_market_share_pct": 0,
+  "competition_level": "low|medium|high",
+  "top_competitors": ["country (share%)"],
+  "certifications_required": ["cert name"],
+  "time_to_first_shipment_days": 0,
+  "risk_factors": ["risk description"],
+  "risk_level": "low|medium|high",
+  "seasonality": {"harvest": "", "best_export": ""},
+  "origin_region": "where in India to source",
+  "nearest_port": "best port",
+  "opportunity_score": 0
+}
+Use REAL prices from commodity exchanges, REAL trade data. Don't guess.`, true);
+
+  if (result) {
+    await cacheSet(key, "trade_lane", result, product, destination);
+  }
+  return { data: result, source: "ai_live" };
+};
 const STATES = ["Andhra Pradesh", "Bihar", "Delhi", "Goa", "Gujarat", "Haryana", "Jharkhand", "Karnataka", "Kerala", "Madhya Pradesh", "Maharashtra", "Odisha", "Punjab", "Rajasthan", "Tamil Nadu", "Telangana", "Uttar Pradesh", "Uttarakhand", "West Bengal"];
 const PL = [{ k: "opportunity_identified", l: "Opportunity", i: "🎯" }, { k: "trade_lane_analyzed", l: "Analyzed", i: "📊" }, { k: "buyer_shortlisted", l: "Buyers", i: "🔍" }, { k: "buyer_contacted", l: "Contact", i: "📧" }, { k: "buyer_negotiating", l: "Negotiate", i: "🤝" }, { k: "terms_agreed", l: "Agreed", i: "✅" }, { k: "payment_security_initiated", l: "Pay Sec", i: "🔒" }, { k: "lc_issued", l: "LC", i: "🏦" }, { k: "supplier_identified", l: "Supplier", i: "🏭" }, { k: "procurement_ordered", l: "Ordered", i: "📦" }, { k: "goods_at_warehouse", l: "Warehouse", i: "🏬" }, { k: "quality_passed", l: "Quality", i: "✓" }, { k: "certificates_obtained", l: "Certs", i: "📋" }, { k: "container_booked", l: "Booked", i: "🚢" }, { k: "customs_filed", l: "Customs", i: "⚖️" }, { k: "vessel_departed", l: "Shipped", i: "🚀" }, { k: "arrived_destination", l: "Arrived", i: "📍" }, { k: "payment_received", l: "Paid", i: "💰" }, { k: "incentives_claimed", l: "Claims", i: "🎁" }, { k: "deal_closed", l: "Closed", i: "🏆" }];
 
@@ -157,10 +326,11 @@ function Onboarding({ onDone }) {
 /* ═══ BUYER MODULE ═══ */
 function BuyerMod({ deal, lane, onLink }) {
   const [buyers, sB] = useState([]); const [ld, sL] = useState(true); const [em, sE] = useState(null); const [eb, sEB] = useState(""); const [gl, sGL] = useState(false);
+  const [src, sSrc] = useState("");
   useEffect(() => { (async () => {
-    const b = await sbGet("buyers", `?country=eq.${deal.destination_country}&order=risk_score.desc`);
-    const scored = (b||[]).map(x => { const pr = jp(x.products_imported); const mt = pr.some(p => deal.product_name.toLowerCase().includes(p.toLowerCase()) || p.toLowerCase().includes(deal.product_name.split("(")[0].trim().split(" ")[0].toLowerCase())); return { ...x, rel: mt ? 100 : 40, pr }; }).sort((a, b) => (b.rel + b.risk_score) - (a.rel + a.risk_score));
-    sB(scored); sL(false);
+    const result = await findBuyersLive(deal.product_name, deal.destination_country);
+    const scored = (result.buyers || []).map(x => { const pr = jp(x.products_imported); const mt = pr.some(p => deal.product_name.toLowerCase().includes(p.toLowerCase()) || p.toLowerCase().includes(deal.product_name.split("(")[0].trim().split(" ")[0].toLowerCase())); return { ...x, rel: mt ? 100 : 40, pr: pr.length ? pr : [deal.product_name] }; }).sort((a, b) => (b.rel + (b.risk_score||50)) - (a.rel + (a.risk_score||50)));
+    sB(scored); sSrc(result.source); sL(false);
   })(); }, [deal.destination_country, deal.product_name]);
 
   const gen = async (buyer) => {
@@ -173,10 +343,10 @@ function BuyerMod({ deal, lane, onLink }) {
     sGL(false);
   };
 
-  if (ld) return <div><div className="sp" /><p className="mu">Searching importers in {deal.destination_country}...</p></div>;
+  if (ld) return <div><div className="sp" /><p className="mu">Searching real importers in {deal.destination_country}...</p></div>;
   return (<div>
     <div className="cd2"><h3>🔍 Buyer Discovery — {deal.destination_country}</h3>
-      <p style={{ fontSize: 12, color: "var(--t2)", marginTop: -8, marginBottom: 14 }}>{buyers.length} importers found · Ranked by relevance + risk</p>
+      <p style={{ fontSize: 12, color: "var(--t2)", marginTop: -8, marginBottom: 14 }}>{buyers.length} importers found · Source: {src === "ai_live" ? "🌐 AI + Web Search (live)" : src === "cache" ? "⚡ Cached intelligence" : "📊 Trade database"}</p>
       {buyers.map(b => <div className="bc" key={b.id}>
         <div className="bch"><div><div className="bcn">{b.company_name}</div><div className="bcc">{b.city}, {b.country} · {b.payment_preference}</div></div>
           <div className={`brs ${b.risk_score >= 80 ? "brh" : b.risk_score >= 60 ? "brm" : "brl"}`}>{b.risk_score}</div></div>
@@ -330,10 +500,16 @@ function SupplierMod({ deal, lane, onLinkSupplier }) {
     }).sort((a, b) => a.landedCost - b.landedCost);
     sS(matched);
 
-    const allPrices = await sbGet("market_prices", "?order=recorded_at.desc&limit=50");
+    const allPrices = await sbGet("mandi_prices_raw", "?order=arrival_date.desc&limit=100");
     const relevantPrices = (allPrices || []).filter(p =>
       productWords.some(w => p.commodity.toLowerCase().includes(w))
-    );
+    ).map(p => ({
+      ...p,
+      market_name: p.market,
+      market_source: p.source,
+      price_per_kg: p.modal_price / 100, // Convert quintal to kg
+      recorded_at: p.arrival_date,
+    }));
     sP(relevantPrices);
     sLd(false);
   })(); }, [deal.product_name]);
@@ -818,18 +994,40 @@ function DealWS({ deal, trader, lane, onBack, onUpd }) {
 /* ═══ DASHBOARD (TIER 2/3) ═══ */
 function Dashboard({ trader, deals, onDealClick, onNewDeal }) {
   const active = deals.filter(d => d.status !== "deal_closed");
+  const [refreshing, sRef] = useState(false);
+  const [liveFx, sLFx] = useState(null);
+  
+  useEffect(() => { (async () => {
+    const r = await sbGet("fx_rates", "?base_currency=eq.USD&target_currency=eq.INR&source=eq.exchangerate-api&order=recorded_at.desc&limit=1");
+    if (r?.[0]) sLFx(r[0]);
+  })(); }, []);
+
+  const doRefresh = async () => { sRef(true); await refreshData(); const r = await sbGet("fx_rates", "?base_currency=eq.USD&target_currency=eq.INR&source=eq.exchangerate-api&order=recorded_at.desc&limit=1"); if (r?.[0]) sLFx(r[0]); sRef(false); };
   const closed = deals.filter(d => d.status === "deal_closed");
   const totalDeployed = deals.reduce((a, d) => a + (d.capital_deployed_inr || 0), 0);
   const totalProfit = deals.reduce((a, d) => a + (d.profit_inr || 0), 0);
   const totalRevenue = deals.reduce((a, d) => a + ((d.fob_price_total_usd || 0) * 85), 0);
 
   return (<div>
-    <div className="rh"><h2>Dashboard</h2><p>{trader?.name} · {deals.length} deals · {active.length} active</p></div>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
+      <div className="rh" style={{ marginBottom: 0, borderBottom: "none", paddingBottom: 0 }}><h2>Dashboard</h2><p>{trader?.name} · {deals.length} deals · {active.length} active</p></div>
+      <button className="btn b2" onClick={doRefresh} disabled={refreshing} style={{ fontSize: 11, whiteSpace: "nowrap" }}>
+        {refreshing ? "⟳ Refreshing..." : "⟳ Refresh Live Data"}
+      </button>
+    </div>
+    
+    {liveFx && <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+      <span className="tgi tf" style={{ fontSize: 11 }}>USD/INR ₹{liveFx.spot_rate} (live)</span>
+      <span className="tgi td" style={{ fontSize: 11 }}>Source: exchangerate-api</span>
+      <span className="tgi" style={{ fontSize: 11, background: "var(--b3)", color: "var(--t2)" }}>Mandi: data.gov.in</span>
+      <span className="tgi" style={{ fontSize: 11, background: "var(--b3)", color: "var(--t2)" }}>Updated: {new Date(liveFx.recorded_at).toLocaleDateString()}</span>
+    </div>}
+
     <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 20 }}>
       <div className="sc"><div className="scl">Total Capital</div><div className="scv" style={{ color: "var(--ac)" }}>{fI(trader?.available_capital || 0)}</div></div>
       <div className="sc"><div className="scl">Deployed</div><div className="scv" style={{ color: "var(--bl)" }}>{fI(totalDeployed)}</div><div className="scs">{deals.length} deals</div></div>
       <div className="sc"><div className="scl">Expected Profit</div><div className="scv" style={{ color: "var(--g)" }}>{fI(totalProfit)}</div><div className="scs">All deals combined</div></div>
-      <div className="sc"><div className="scl">Revenue Pipeline</div><div className="scv" style={{ color: "var(--ac)" }}>{fI(totalRevenue)}</div></div>
+      <div className="sc"><div className="scl">Live FX (USD/INR)</div><div className="scv" style={{ color: "var(--ac)" }}>₹{liveFx?.spot_rate || FX}</div><div className="scs">30d fwd: ₹{liveFx?.forward_30d || "—"}</div></div>
     </div>
 
     <div className="cd2"><h3>📊 Active Deals ({active.length})</h3>
@@ -863,6 +1061,17 @@ function Dashboard({ trader, deals, onDealClick, onNewDeal }) {
 function App() {
   const [scr, sS] = useState("ob"); const [tr, sT] = useState(null); const [lanes, sL] = useState([]); const [exp, sE] = useState(null); const [ld, sLd] = useState(false); const [deal, sD] = useState(null); const [dLane, sDL] = useState(null);
   const [allDeals, sAD] = useState([]);
+  const [customProduct, sCP] = useState(""); const [customDest, sCD] = useState(""); const [customLane, sCL] = useState(null); const [analyzing, sAn] = useState(false);
+
+  const analyzeCustom = async () => {
+    if (!customProduct.trim() || !customDest.trim()) return;
+    sAn(true); sCL(null);
+    const result = await analyzeTradeLane(customProduct, customDest, tr?.available_capital || 1000000);
+    if (result?.data) {
+      sCL({ ...result.data, id: "custom_" + Date.now(), source: result.source });
+    }
+    sAn(false);
+  };
   const load = async t => { sLd(true); const l = await sbGet("trade_lanes", `?min_capital_required_inr=lte.${t.available_capital}&order=opportunity_score.desc`); sL(l || []); sLd(false); };
   const loadDeals = async t => { const d = await sbGet("deals", `?trader_id=eq.${t.id}&order=created_at.desc`); sAD(d || []); };
   const onboard = t => { sT(t); loadDeals(t); sS("dash"); load(t); };
@@ -927,8 +1136,41 @@ function App() {
     {scr === "dash" && <Dashboard trader={tr} deals={allDeals} onDealClick={openDeal} onNewDeal={() => sS("res")} />}
     {scr === "res" && ld && <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "60vh" }}><div className="sp" /><p className="mu">Analyzing {fI(tr?.available_capital || 0)} across trade lanes...</p></div>}
     {scr === "res" && !ld && <div>
-      <div className="rh"><h2>Trade Lanes for {fI(tr?.available_capital || 0)}</h2><p>{lanes.length} viable lanes · Ranked by opportunity score</p></div>
+      <div className="rh"><h2>Trade Lanes for {fI(tr?.available_capital || 0)}</h2><p>{lanes.length} pre-analyzed lanes + analyze ANY product below</p></div>
+      
+      <div className="cd2" style={{ borderLeft: "3px solid var(--ac)" }}>
+        <h3>🔍 Analyze Any Product — AI + Web Search</h3>
+        <p style={{ fontSize: 12, color: "var(--t2)", marginTop: -8, marginBottom: 14 }}>Not limited to pre-seeded products. Enter ANY product and destination — AI finds real data.</p>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 10, alignItems: "end" }}>
+          <div><label className="fl">Product</label><input className="fi" placeholder="e.g. Cashew nuts, Basmati rice, Leather bags" value={customProduct} onChange={e => sCP(e.target.value)} /></div>
+          <div><label className="fl">Destination</label><input className="fi" placeholder="e.g. Vietnam, UK, Brazil" value={customDest} onChange={e => sCD(e.target.value)} /></div>
+          <button className="btn b1" onClick={analyzeCustom} disabled={analyzing || !customProduct.trim() || !customDest.trim()} style={{ padding: "11px 20px", height: 44 }}>{analyzing ? "Analyzing..." : "Analyze →"}</button>
+        </div>
+        {analyzing && <div style={{ marginTop: 16 }}><div className="sp" /><p className="mu">AI searching web for real trade data on {customProduct} → {customDest}...</p></div>}
+        {customLane && <div style={{ marginTop: 16, background: "var(--b1)", borderRadius: 10, padding: 18, border: "1px solid var(--ba)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
+            <div><div style={{ font: "600 16px var(--f)" }}>{customLane.product_name || customProduct}</div>
+              <div style={{ font: "11px var(--f)", color: "var(--t3)" }}>{customLane.origin_region || "India"} → {customLane.destination_country || customDest} · via {customLane.nearest_port || "TBD"}</div></div>
+            <div style={{ font: "600 11px var(--f)", padding: "3px 10px", borderRadius: 12, background: "var(--ag)", color: "var(--ac)" }}>🌐 {customLane.source === "cache" ? "Cached" : "Live AI"}</div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 12 }}>
+            <div className="bmi"><div className="bmil">Procurement</div><div className="bmiv">₹{customLane.avg_procurement_cost_per_kg_inr || "?"}/kg</div></div>
+            <div className="bmi"><div className="bmil">FOB Price</div><div className="bmiv">${customLane.avg_fob_price_per_kg_usd || "?"}/kg</div></div>
+            <div className="bmi"><div className="bmil">Est. Margin</div><div className="bmiv" style={{ color: "var(--g)" }}>{customLane.estimated_margin_pct || "?"}%</div></div>
+            <div className="bmi"><div className="bmil">Score</div><div className="bmiv" style={{ color: "var(--ac)" }}>{customLane.opportunity_score || "?"}</div></div>
+          </div>
+          {customLane.risk_factors && <div style={{ marginBottom: 10 }}>{jp(customLane.risk_factors).slice(0, 3).map((r, i) => <span key={i} className="tgi trm" style={{ marginRight: 4 }}>⚠ {r}</span>)}</div>}
+          <button className="ab" onClick={() => {
+            const cl = { ...customLane, id: customLane.id, avg_procurement_cost_per_kg_inr: customLane.avg_procurement_cost_per_kg_inr || 100, avg_fob_price_per_kg_usd: customLane.avg_fob_price_per_kg_usd || 2, estimated_margin_pct: customLane.estimated_margin_pct || 15, time_to_first_shipment_days: customLane.time_to_first_shipment_days || 45 };
+            const proc = (tr?.available_capital || 0) * 0.65; const qty = Math.round(proc / cl.avg_procurement_cost_per_kg_inr);
+            const rev = qty * cl.avg_fob_price_per_kg_usd * FX; const prof = rev - (tr?.available_capital || 0);
+            accept(cl, qty, prof);
+          }}>Accept & Begin Execution →</button>
+        </div>}
+      </div>
+
       {capBrkdn(tr?.available_capital || 0)}
+      <div style={{ font: "600 13px var(--f)", color: "var(--t3)", marginBottom: 12, textTransform: "uppercase", letterSpacing: 1 }}>Pre-Analyzed Lanes</div>
       {lanes.map((l, i) => laneCard(l, i))}
     </div>}
     {scr === "deal" && deal && <DealWS deal={deal} trader={tr} lane={dLane} onBack={() => { loadDeals(tr); sS("dash"); }} onUpd={d => sD(d)} />}
