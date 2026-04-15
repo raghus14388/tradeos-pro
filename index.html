@@ -293,12 +293,490 @@ function CompMod({ deal }) {
   </div>);
 }
 
+/* ═══ SUPPLIER DISCOVERY + MANDI PRICES ═══ */
+const PORT_DISTANCES = {
+  "Kolhapur": { "JNPT Mumbai": { km: 380, cost: 5 }, "Goa (Mormugao)": { km: 220, cost: 3.5 } },
+  "Belgaum": { "JNPT Mumbai": { km: 500, cost: 6 }, "Goa (Mormugao)": { km: 180, cost: 3 }, "Mangalore": { km: 290, cost: 4 } },
+  "Mandya": { "Mangalore": { km: 200, cost: 3 }, "Chennai": { km: 350, cost: 4.5 } },
+  "Sangli": { "JNPT Mumbai": { km: 400, cost: 5.5 }, "Goa (Mormugao)": { km: 260, cost: 4 } },
+  "Erode": { "Tuticorin": { km: 280, cost: 3.5 }, "Chennai": { km: 400, cost: 5 }, "Kochi": { km: 250, cost: 3.5 } },
+  "Nizamabad": { "JNPT Mumbai": { km: 600, cost: 7 }, "Krishnapatnam": { km: 450, cost: 5.5 } },
+  "Wayanad": { "Kochi": { km: 280, cost: 3.5 }, "Mangalore": { km: 150, cost: 2.5 } },
+  "Idukki": { "Kochi": { km: 120, cost: 2 }, "Tuticorin": { km: 250, cost: 3 } },
+  "Unjha": { "Mundra": { km: 200, cost: 2.5 }, "Kandla": { km: 220, cost: 3 } },
+  "Guntur": { "Krishnapatnam": { km: 280, cost: 3.5 }, "Chennai": { km: 440, cost: 5 } },
+  "Jodhpur": { "Mundra": { km: 380, cost: 4.5 }, "Kandla": { km: 420, cost: 5 } },
+  "Chikmagalur": { "Mangalore": { km: 180, cost: 2.5 }, "Chennai": { km: 380, cost: 4.5 } },
+  "Madurai": { "Tuticorin": { km: 160, cost: 2.5 }, "Chennai": { km: 460, cost: 5.5 } },
+  "Junagadh": { "Mundra": { km: 320, cost: 4 }, "Kandla": { km: 280, cost: 3.5 } },
+};
+
+function SupplierMod({ deal, lane, onLinkSupplier }) {
+  const [suppliers, sS] = useState([]);
+  const [prices, sP] = useState([]);
+  const [ld, sLd] = useState(true);
+
+  useEffect(() => { (async () => {
+    const productWords = deal.product_name.toLowerCase().split(/[\s(]+/).filter(w => w.length > 3);
+    const allSuppliers = await sbGet("suppliers", "?order=reliability_score.desc");
+    const matched = (allSuppliers || []).filter(s => {
+      const prods = jp(s.products).map(p => p.toLowerCase()).join(" ");
+      return productWords.some(w => prods.includes(w));
+    }).map(s => {
+      const ports = PORT_DISTANCES[s.location] || {};
+      const bestPort = Object.entries(ports).sort((a, b) => a[1].cost - b[1].cost)[0];
+      return { ...s, ports, bestPort: bestPort ? { name: bestPort[0], ...bestPort[1] } : null,
+        landedCost: s.avg_price_per_kg_inr + (bestPort ? bestPort[1].cost : 8) };
+    }).sort((a, b) => a.landedCost - b.landedCost);
+    sS(matched);
+
+    const allPrices = await sbGet("market_prices", "?order=recorded_at.desc&limit=50");
+    const relevantPrices = (allPrices || []).filter(p =>
+      productWords.some(w => p.commodity.toLowerCase().includes(w))
+    );
+    sP(relevantPrices);
+    sLd(false);
+  })(); }, [deal.product_name]);
+
+  const mandiGroups = {};
+  prices.forEach(p => {
+    if (!mandiGroups[p.market_name]) mandiGroups[p.market_name] = [];
+    mandiGroups[p.market_name].push(p);
+  });
+
+  if (ld) return <div><div className="sp" /><p className="mu">Searching suppliers & mandi prices...</p></div>;
+
+  return (<div>
+    <div className="cd2"><h3>📊 Live Mandi Prices — {deal.product_name}</h3>
+      <p style={{ fontSize: 12, color: "var(--t2)", marginTop: -8, marginBottom: 14 }}>{Object.keys(mandiGroups).length} mandis tracked · {prices.length} price records</p>
+      <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(Object.keys(mandiGroups).length, 4)}, 1fr)`, gap: 10, marginBottom: 16 }}>
+        {Object.entries(mandiGroups).map(([mandi, recs]) => {
+          const latest = recs[0];
+          const prev = recs[1];
+          const change = prev ? ((latest.price_per_kg - prev.price_per_kg) / prev.price_per_kg * 100).toFixed(1) : 0;
+          const isUp = change > 0;
+          return (<div key={mandi} style={{ background: "var(--b1)", borderRadius: 8, padding: 14, borderLeft: `3px solid ${recs === Object.values(mandiGroups).sort((a,b) => a[0].price_per_kg - b[0].price_per_kg)[0] ? "var(--g)" : "var(--bd)"}` }}>
+            <div style={{ font: "600 13px var(--f)", marginBottom: 6 }}>{mandi}</div>
+            <div style={{ font: "700 22px var(--m)", color: "var(--ac)", marginBottom: 2 }}>₹{latest.price_per_kg}<span style={{ font: "11px var(--f)", color: "var(--t3)" }}>/kg</span></div>
+            <div style={{ font: "11px var(--m)", color: isUp ? "var(--r)" : "var(--g)" }}>{isUp ? "▲" : "▼"} {Math.abs(change)}% vs last</div>
+            <div style={{ font: "9px var(--f)", color: "var(--t3)", marginTop: 4 }}>{latest.market_source} · {new Date(latest.recorded_at).toLocaleDateString()}</div>
+          </div>);
+        })}
+      </div>
+      {Object.keys(mandiGroups).length > 1 && <div style={{ background: "var(--b1)", borderRadius: 8, padding: 12, fontSize: 12, color: "var(--t2)", marginBottom: 16 }}>
+        <strong style={{ color: "var(--ac)" }}>Price Insight:</strong> {(() => {
+          const sorted = Object.entries(mandiGroups).sort((a, b) => a[1][0].price_per_kg - b[1][0].price_per_kg);
+          const cheapest = sorted[0]; const costliest = sorted[sorted.length - 1];
+          const diff = costliest[1][0].price_per_kg - cheapest[1][0].price_per_kg;
+          return `${cheapest[0]} is cheapest at ₹${cheapest[1][0].price_per_kg}/kg — ₹${diff}/kg cheaper than ${costliest[0]}. On ${deal.quantity_kg?.toLocaleString()}kg, that saves ₹${(diff * deal.quantity_kg).toLocaleString()}.`;
+        })()}
+      </div>}
+    </div>
+
+    <div className="cd2"><h3>🏭 Suppliers — Ranked by Landed-at-Port Cost</h3>
+      <p style={{ fontSize: 12, color: "var(--t2)", marginTop: -8, marginBottom: 14 }}>{suppliers.length} suppliers found · Procurement + transport = landed cost</p>
+      {suppliers.map((s, i) => <div className="bc" key={s.id}>
+        <div className="bch">
+          <div><div className="bcn">{i === 0 && <span style={{ color: "var(--g)", marginRight: 6 }}>★ BEST</span>}{s.name}</div>
+            <div className="bcc">{s.location}, {s.state} · {s.mandi} · {s.payment_terms}</div></div>
+          <div className={`brs ${s.reliability_score >= 85 ? "brh" : s.reliability_score >= 70 ? "brm" : "brl"}`}>{s.reliability_score}</div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 10 }}>
+          <div className="bmi"><div className="bmil">Mandi Price</div><div className="bmiv">₹{s.avg_price_per_kg_inr}/kg</div></div>
+          <div className="bmi"><div className="bmil">Transport</div><div className="bmiv" style={{ color: "var(--ac)" }}>+₹{s.bestPort ? s.bestPort.cost : "~8"}/kg</div></div>
+          <div className="bmi"><div className="bmil">Landed Cost</div><div className="bmiv" style={{ color: i === 0 ? "var(--g)" : "var(--t1)" }}>₹{s.landedCost}/kg</div></div>
+          <div className="bmi"><div className="bmil">Nearest Port</div><div className="bmiv" style={{ fontSize: 10, fontFamily: "var(--f)" }}>{s.bestPort ? `${s.bestPort.name} (${s.bestPort.km}km)` : "TBD"}</div></div>
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
+          {jp(s.certifications).map((c, j) => <span key={j} className="tgi tf">{c}</span>)}
+        </div>
+        {s.notes && <p style={{ fontSize: 10, color: "var(--t2)", marginBottom: 10, fontStyle: "italic" }}>{s.notes}</p>}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          <div className="di"><span className="dil">Total ({deal.quantity_kg?.toLocaleString()}kg)</span><span className="div" style={{ color: "var(--ac)" }}>{fI(s.landedCost * (deal.quantity_kg || 0))}</span></div>
+          <div className="di"><span className="dil">vs Budget ({fI((deal.capital_deployed_inr || 0) * 0.65)})</span><span className="div" style={{ color: s.landedCost * (deal.quantity_kg || 0) <= (deal.capital_deployed_inr || 0) * 0.65 ? "var(--g)" : "var(--r)" }}>{s.landedCost * (deal.quantity_kg || 0) <= (deal.capital_deployed_inr || 0) * 0.65 ? "✓ Within" : "✗ Over"}</span></div>
+        </div>
+        <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
+          <button className="btn b1" onClick={() => onLinkSupplier?.(s)}>Link to Deal</button>
+          {s.contact_phone && <button className="btn b2" onClick={() => window.open(`tel:${s.contact_phone}`)}>📞 Call</button>}
+        </div>
+      </div>)}
+    </div>
+  </div>);
+}
+
+/* ═══ DOCUMENT GENERATOR ═══ */
+function DocGenMod({ deal, trader, lane }) {
+  const [genDoc, sGD] = useState(null);
+
+  const generatePI = () => {
+    const qty = deal.quantity_kg || 0;
+    const fob = deal.fob_price_per_kg_usd || 0;
+    const total = qty * fob;
+    const date = new Date().toISOString().split("T")[0];
+    const piNum = `PI-${date.replace(/-/g, "")}-${deal.deal_number?.split("-").pop() || "001"}`;
+    return {
+      title: "PROFORMA INVOICE",
+      number: piNum,
+      lines: [
+        ["Proforma Invoice No.", piNum],
+        ["Date", date],
+        ["", ""],
+        ["SELLER", ""],
+        ["Company", trader?.name || "Your Company"],
+        ["City", trader?.city || ""],
+        ["State", trader?.state || ""],
+        ["", ""],
+        ["BUYER", ""],
+        ["Company", "To be confirmed"],
+        ["Country", deal.destination_country],
+        ["", ""],
+        ["PRODUCT DETAILS", ""],
+        ["Product", deal.product_name],
+        ["HS Code", deal.hs_code || ""],
+        ["Origin", lane?.origin_region || "India"],
+        ["Quality", "Export Grade"],
+        ["", ""],
+        ["COMMERCIAL TERMS", ""],
+        ["Quantity", `${qty.toLocaleString()} KG`],
+        ["Unit Price", `USD ${fob.toFixed(2)} per KG`],
+        ["Total Value", `USD ${total.toLocaleString(undefined, { minimumFractionDigits: 2 })}`],
+        ["Incoterm", deal.incoterm || "FOB"],
+        ["Port of Loading", deal.origin_port || lane?.nearest_port || ""],
+        ["Port of Discharge", "To be advised"],
+        ["", ""],
+        ["PAYMENT TERMS", ""],
+        ["Payment", "Irrevocable LC at Sight / As agreed"],
+        ["", ""],
+        ["SHIPMENT", ""],
+        ["Packing", "Export standard packing"],
+        ["Shipment", "Within 30 days from LC opening"],
+        ["Validity", "15 days from date of PI"],
+      ]
+    };
+  };
+
+  const generatePL = () => {
+    const qty = deal.quantity_kg || 0;
+    const bags = Math.ceil(qty / 25);
+    const date = new Date().toISOString().split("T")[0];
+    return {
+      title: "PACKING LIST",
+      number: `PL-${date.replace(/-/g, "")}-${deal.deal_number?.split("-").pop() || "001"}`,
+      lines: [
+        ["Packing List No.", `PL-${date.replace(/-/g, "")}`],
+        ["Date", date],
+        ["Invoice Ref.", "As per Commercial Invoice"],
+        ["", ""],
+        ["Product", deal.product_name],
+        ["HS Code", deal.hs_code || ""],
+        ["Net Weight", `${qty.toLocaleString()} KG`],
+        ["Gross Weight", `${(qty * 1.02).toFixed(0).toLocaleString()} KG (approx)`],
+        ["No. of Packages", `${bags} bags x 25 KG`],
+        ["Package Type", "PP bags with inner liner"],
+        ["Marking", `${deal.product_name} / Net ${qty}KG / Made in India`],
+        ["Container", "LCL (Less than Container Load)"],
+        ["", ""],
+        ["Dimensions (per bag)", ""],
+        ["Length x Width x Height", "70cm x 45cm x 20cm (approx)"],
+        ["CBM per bag", "0.063"],
+        ["Total CBM", `${(bags * 0.063).toFixed(2)} CBM`],
+      ]
+    };
+  };
+
+  const generateCI = () => {
+    const qty = deal.quantity_kg || 0;
+    const fob = deal.fob_price_per_kg_usd || 0;
+    const total = qty * fob;
+    const date = new Date().toISOString().split("T")[0];
+    const ciNum = `CI-${date.replace(/-/g, "")}-${deal.deal_number?.split("-").pop() || "001"}`;
+    return {
+      title: "COMMERCIAL INVOICE",
+      number: ciNum,
+      lines: [
+        ["Invoice No.", ciNum], ["Date", date], ["", ""],
+        ["EXPORTER (SELLER)", ""], ["Company", trader?.name || ""], ["City", trader?.city || ""], ["State", trader?.state || ""], ["Country", "India"], ["", ""],
+        ["CONSIGNEE (BUYER)", ""], ["Company", "As per LC / PO"], ["Country", deal.destination_country], ["", ""],
+        ["SHIPMENT DETAILS", ""], ["Port of Loading", deal.origin_port || lane?.nearest_port || ""], ["Port of Discharge", "As per LC"], ["Vessel / Flight", deal.vessel_name || "TBA"], ["BL / AWB No.", deal.bl_number || "TBA"], ["", ""],
+        ["PRODUCT DETAILS", ""], ["Description", deal.product_name], ["HS Code", deal.hs_code || ""], ["Country of Origin", "India"], ["", ""],
+        ["ITEM", ""], ["Quantity", `${qty.toLocaleString()} KG (Net)`], ["Unit Price", `USD ${fob.toFixed(2)} per KG`], ["Total FOB Value", `USD ${total.toLocaleString(undefined, { minimumFractionDigits: 2 })}`], ["Incoterm", deal.incoterm || "FOB"], ["", ""],
+        ["PAYMENT", ""], ["Terms", "As per LC / Contract"], ["Bank", "Exporter's AD Bank"], ["", ""],
+        ["DECLARATION", ""], ["", "We declare that this invoice shows the actual price of the goods described and that all particulars are true and correct."],
+      ]
+    };
+  };
+
+  const docs = [
+    { key: "pi", name: "Proforma Invoice", icon: "📄", gen: generatePI, desc: "Commercial offer to buyer with terms" },
+    { key: "ci", name: "Commercial Invoice", icon: "🧾", gen: generateCI, desc: "Final invoice for customs clearance" },
+    { key: "pl", name: "Packing List", icon: "📦", gen: generatePL, desc: "Package details for shipping" },
+  ];
+
+  const copyDoc = (doc) => {
+    const text = doc.lines.map(([l, v]) => l && v ? `${l}: ${v}` : l || v || "").join("\n");
+    navigator.clipboard?.writeText(`${doc.title}\n${"=".repeat(40)}\n\n${text}`);
+  };
+
+  return (<div>
+    <div className="cd2"><h3>📄 Document Generator</h3>
+      <p style={{ fontSize: 12, color: "var(--t2)", marginTop: -8, marginBottom: 14 }}>Auto-filled from deal data · Click to generate</p>
+      {docs.map(d => <div className="ai" key={d.key} onClick={() => sGD(genDoc?.key === d.key ? null : { ...d.gen(), key: d.key })}>
+        <span className="aii">{d.icon}</span>
+        <div className="ait"><div className="atl">{d.name}</div><div className="atd">{d.desc}</div></div>
+        <span style={{ color: "var(--t3)", fontSize: 13 }}>{genDoc?.key === d.key ? "▼" : "→"}</span>
+      </div>)}
+      {genDoc && <div style={{ animation: "sl .3s ease", marginTop: 12 }}>
+        <div style={{ background: "var(--b1)", borderRadius: 10, padding: 20, border: "1px solid var(--bd)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+            <div style={{ font: "700 16px var(--m)", color: "var(--ac)" }}>{genDoc.title}</div>
+            <button className="btn b1" onClick={() => copyDoc(genDoc)}>📋 Copy</button>
+          </div>
+          <div style={{ font: "11px var(--m)", color: "var(--t3)", marginBottom: 12 }}>Ref: {genDoc.number}</div>
+          {genDoc.lines.map(([l, v], i) => {
+            if (!l && !v) return <div key={i} style={{ height: 8 }} />;
+            if (l && !v) return <div key={i} style={{ font: "600 12px var(--f)", color: "var(--ac)", marginTop: 8, marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>{l}</div>;
+            return <div className="di" key={i} style={{ marginBottom: 3 }}><span className="dil">{l}</span><span className="div">{v}</span></div>;
+          })}
+        </div>
+      </div>}
+    </div>
+  </div>);
+}
+
+/* ═══ LOGISTICS MODULE (TIER 1) ═══ */
+function LogisticsMod({ deal, lane }) {
+  const [rates, sR] = useState([]); const [ld, sLd] = useState(true);
+  useEffect(() => { (async () => {
+    const originPort = deal.origin_port || lane?.nearest_port || "";
+    const portWords = originPort.split("/").map(p => p.trim());
+    const all = await sbGet("freight_rates", "?order=rate_per_cbm_usd.asc.nullslast");
+    const matched = (all || []).filter(r => portWords.some(pw => r.origin_port.toLowerCase().includes(pw.toLowerCase().split(" ")[0])));
+    sR(matched.length > 0 ? matched : (all || []).slice(0, 8));
+    sLd(false);
+  })(); }, [deal.origin_port, lane]);
+
+  const qty = deal.quantity_kg || 0;
+  const bags = Math.ceil(qty / 25);
+  const cbm = bags * 0.063;
+  const isLCL = qty < 14000;
+
+  if (ld) return <div><div className="sp" /><p className="mu">Loading freight rates...</p></div>;
+  return (<div>
+    <div className="cd2"><h3>🚢 Logistics & Freight — {deal.product_name}</h3>
+      <p style={{ fontSize: 12, color: "var(--t2)", marginTop: -8, marginBottom: 14 }}>{isLCL ? "LCL (Less than Container)" : "FCL recommended"} · {cbm.toFixed(1)} CBM · {bags} bags</p>
+      <div className="s3" style={{ marginBottom: 16 }}>
+        <div className="sc"><div className="scl">Shipment Type</div><div className="scv" style={{ color: "var(--ac)" }}>{isLCL ? "LCL" : "FCL"}</div><div className="scs">{qty < 14000 ? "Under FCL threshold" : "Full container viable"}</div></div>
+        <div className="sc"><div className="scl">Volume</div><div className="scv" style={{ color: "var(--bl)" }}>{cbm.toFixed(1)} CBM</div><div className="scs">{bags} bags × 0.063 CBM</div></div>
+        <div className="sc"><div className="scl">Weight</div><div className="scv" style={{ color: "var(--g)" }}>{(qty / 1000).toFixed(1)}T</div><div className="scs">{qty.toLocaleString()} kg net</div></div>
+      </div>
+      {rates.map((r, i) => {
+        const cost = isLCL ? (r.rate_per_cbm_usd ? r.rate_per_cbm_usd * cbm : r.rate_per_kg_usd * qty) : (r.rate_20ft_usd || 0);
+        return (<div className="bc" key={r.id} style={{ borderLeft: i === 0 ? "3px solid var(--g)" : "3px solid var(--bd)" }}>
+          <div className="bch"><div><div className="bcn">{r.origin_port} → {r.destination_port}</div>
+            <div className="bcc">{r.shipping_line} · {r.container_type} · {r.transit_days} days transit</div></div>
+            <div style={{ textAlign: "right" }}><div style={{ font: "700 18px var(--m)", color: i === 0 ? "var(--g)" : "var(--ac)" }}>${cost.toFixed(0)}</div>
+              <div style={{ font: "9px var(--f)", color: "var(--t3)" }}>total freight</div></div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
+            <div className="bmi"><div className="bmil">Rate/CBM</div><div className="bmiv">${r.rate_per_cbm_usd || "—"}</div></div>
+            <div className="bmi"><div className="bmil">Rate/KG</div><div className="bmiv">${r.rate_per_kg_usd || "—"}</div></div>
+            <div className="bmi"><div className="bmil">20ft FCL</div><div className="bmiv">${r.rate_20ft_usd || "—"}</div></div>
+            <div className="bmi"><div className="bmil">Transit</div><div className="bmiv">{r.transit_days}d</div></div>
+          </div>
+          {r.notes && <p style={{ fontSize: 10, color: "var(--t2)", marginTop: 6, fontStyle: "italic" }}>{r.notes}</p>}
+        </div>);
+      })}
+      {isLCL && <div style={{ background: "var(--b1)", borderRadius: 8, padding: 14, fontSize: 12, color: "var(--t2)", lineHeight: 1.6 }}>
+        <strong style={{ color: "var(--ac)" }}>FCL Threshold:</strong> At {qty.toLocaleString()}kg you're shipping LCL. A 20ft container fits ~16-18T. When your capital grows to ~₹{Math.round(16000 * (deal.procurement_cost_per_kg_inr || 100) / 65000)}L, you can ship FCL and save 30-40% on freight per kg.
+      </div>}
+    </div>
+
+    <div className="cd2"><h3>📋 Shipping Checklist</h3>
+      {[{ n: "Book freight with forwarder", s: "pending" }, { n: "Arrange inland transport to port", s: "pending" }, { n: "Marine insurance (110% CIF value)", s: "pending" }, { n: "Container stuffing supervision", s: "pending" }, { n: "Obtain Bill of Lading", s: "pending" }, { n: "Share BL copy with buyer", s: "pending" }, { n: "Vessel tracking link to buyer", s: "pending" }].map((item, i) =>
+        <div className="doc" key={i}><div className="dst dns" /><div className="dtx"><div className="dtn">{item.n}</div></div></div>)}
+    </div>
+  </div>);
+}
+
+/* ═══ PAYMENT SECURITY MODULE (TIER 1) ═══ */
+const ECGC_RATES = { UAE: 0.45, "Saudi Arabia": 0.50, USA: 0.35, Japan: 0.30, Thailand: 0.55, Germany: 0.30, Indonesia: 0.65 };
+
+function PaymentMod({ deal, lane, trader }) {
+  const [payments, sP] = useState([]);
+  useEffect(() => { (async () => {
+    const p = await sbGet("deal_payments", `?deal_id=eq.${deal.id}&order=created_at.asc`);
+    sP(p || []);
+  })(); }, [deal.id]);
+
+  const fob = (deal.fob_price_total_usd || 0);
+  const cifEst = fob * 1.15;
+  const ecgcRate = ECGC_RATES[deal.destination_country] || 0.50;
+  const ecgcPremium = cifEst * ecgcRate / 100;
+  const ecgcCoverage = cifEst * 0.85;
+  const insuranceVal = cifEst * 1.10;
+
+  const paymentOptions = [
+    { method: "LC at Sight", risk: "Low", cost: "1-2% of LC value", days: "15-20 days post-shipment", rec: true, desc: "Bank-guaranteed. Safest for first shipment. Recommended for new buyers." },
+    { method: "LC 30/60/90 day DA", risk: "Medium", cost: "1-2% + interest cost", days: "45-110 days", rec: false, desc: "Deferred payment. Higher margin but capital locked longer." },
+    { method: "TT Advance (50-100%)", risk: "Very Low", cost: "Bank charges only", days: "Before shipment", rec: false, desc: "Best case. Buyer pays upfront. Rare for first deals." },
+    { method: "TT against BL copy", risk: "High", cost: "Bank charges only", days: "20-30 days", rec: false, desc: "Risky without ECGC. Buyer could delay or dispute." },
+    { method: "Open Account (DA)", risk: "Very High", cost: "None", days: "30-90 days post-delivery", rec: false, desc: "Never for first shipment. Only after trust is established." },
+  ];
+
+  return (<div>
+    <div className="cd2"><h3>🔒 Payment Security</h3>
+      <p style={{ fontSize: 12, color: "var(--t2)", marginTop: -8, marginBottom: 14 }}>Protect your ₹{((deal.capital_deployed_inr || 0) / 100000).toFixed(1)}L capital with the right payment mechanism</p>
+
+      <div className="s3" style={{ marginBottom: 16 }}>
+        <div className="sc" style={{ borderLeft: "3px solid var(--g)" }}><div className="scl">ECGC Premium</div><div className="scv" style={{ color: "var(--g)" }}>${ecgcPremium.toFixed(0)}</div><div className="scs">₹{Math.round(ecgcPremium * 85).toLocaleString()} · {ecgcRate}% of CIF</div></div>
+        <div className="sc" style={{ borderLeft: "3px solid var(--bl)" }}><div className="scl">ECGC Coverage</div><div className="scv" style={{ color: "var(--bl)" }}>${ecgcCoverage.toFixed(0)}</div><div className="scs">85% of CIF value</div></div>
+        <div className="sc" style={{ borderLeft: "3px solid var(--ac)" }}><div className="scl">Marine Insurance</div><div className="scv" style={{ color: "var(--ac)" }}>${(insuranceVal * 0.002).toFixed(0)}</div><div className="scs">0.2% of 110% CIF</div></div>
+      </div>
+
+      <div className="ds"><h4>Payment Methods — Ranked by Safety</h4>
+      {paymentOptions.map((opt, i) => <div key={i} className="bc" style={{ borderLeft: opt.rec ? "3px solid var(--g)" : "3px solid var(--bd)" }}>
+        <div className="bch"><div><div className="bcn">{opt.rec && <span style={{ color: "var(--g)", marginRight: 6 }}>★ RECOMMENDED</span>}{opt.method}</div>
+          <div className="bcc">{opt.desc}</div></div>
+          <div style={{ font: "600 11px var(--f)", padding: "3px 10px", borderRadius: 12, background: opt.risk === "Low" || opt.risk === "Very Low" ? "var(--gb)" : opt.risk === "Medium" ? "#f59e0b15" : "var(--rb)", color: opt.risk === "Low" || opt.risk === "Very Low" ? "var(--g)" : opt.risk === "Medium" ? "var(--ac)" : "var(--r)" }}>{opt.risk}</div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+          <div className="di"><span className="dil">Cost</span><span className="div" style={{ fontFamily: "var(--f)", fontSize: 10 }}>{opt.cost}</span></div>
+          <div className="di"><span className="dil">Payment Timeline</span><span className="div" style={{ fontFamily: "var(--f)", fontSize: 10 }}>{opt.days}</span></div>
+        </div>
+      </div>)}
+      </div>
+
+      <div className="ds"><h4>ECGC Calculator — {deal.destination_country}</h4>
+        <div className="dg">
+          <div className="di"><span className="dil">FOB Value</span><span className="div">${fob.toLocaleString()}</span></div>
+          <div className="di"><span className="dil">CIF Estimate (FOB+15%)</span><span className="div">${cifEst.toFixed(0)}</span></div>
+          <div className="di"><span className="dil">ECGC Rate ({deal.destination_country})</span><span className="div">{ecgcRate}%</span></div>
+          <div className="di"><span className="dil">Annual Premium</span><span className="div" style={{ color: "var(--g)" }}>${ecgcPremium.toFixed(0)} (₹{Math.round(ecgcPremium * 85).toLocaleString()})</span></div>
+          <div className="di"><span className="dil">Coverage (85% of CIF)</span><span className="div" style={{ color: "var(--bl)" }}>${ecgcCoverage.toFixed(0)}</span></div>
+          <div className="di"><span className="dil">Your exposure if uninsured</span><span className="div" style={{ color: "var(--r)" }}>${cifEst.toFixed(0)} (100%)</span></div>
+        </div>
+        <div style={{ background: "var(--b1)", borderRadius: 8, padding: 12, fontSize: 12, color: "var(--t2)", marginTop: 10, lineHeight: 1.6 }}>
+          <strong style={{ color: "var(--ac)" }}>Verdict:</strong> For ₹{Math.round(ecgcPremium * 85).toLocaleString()} premium, ECGC covers ₹{Math.round(ecgcCoverage * 85).toLocaleString()} if buyer defaults. That's {((ecgcCoverage * 85) / (ecgcPremium * 85)).toFixed(0)}x protection. Always take it for first-time buyers.
+        </div>
+      </div>
+
+      {payments.length > 0 && <div className="ds"><h4>Payment Tranches</h4>
+        {payments.map((p, i) => <div className="di" key={i} style={{ marginBottom: 4 }}>
+          <span className="dil">{p.tranche_name}</span>
+          <span className="div" style={{ color: p.status === "received" ? "var(--g)" : p.status === "overdue" ? "var(--r)" : "var(--ac)" }}>${p.amount_usd} — {p.status}</span>
+        </div>)}
+      </div>}
+    </div>
+  </div>);
+}
+
+/* ═══ POST-SHIPMENT RECOVERY (TIER 2) ═══ */
+const RODTEP_RATES = { "0910.30": 3.2, "0908.31": 2.8, "0904.11": 3.0, "1211.90": 3.5, "1701.13": 2.5, "0904.21": 3.2, "1207.40": 2.8, "0901.11": 2.0, "1202.42": 2.5, "0909.31": 3.0 };
+const DRAWBACK_RATES = { "0910.30": 1.5, "0908.31": 1.0, "0904.11": 1.5, "1211.90": 2.0, "1701.13": 1.8, "0904.21": 1.5, "1207.40": 1.5, "0901.11": 1.0, "1202.42": 1.5, "0909.31": 1.5 };
+
+function RecoveryMod({ deal }) {
+  const fobInr = (deal.fob_price_total_usd || 0) * 85;
+  const rodtepRate = RODTEP_RATES[deal.hs_code] || 2.5;
+  const drawbackRate = DRAWBACK_RATES[deal.hs_code] || 1.5;
+  const rodtep = fobInr * rodtepRate / 100;
+  const drawback = fobInr * drawbackRate / 100;
+  const igstRate = 5;
+  const igstRefund = (deal.procurement_cost_total_inr || 0) * igstRate / 100;
+  const total = rodtep + drawback + igstRefund;
+
+  const items = [
+    { name: "RoDTEP Scrip", amount: rodtep, rate: `${rodtepRate}% of FOB`, status: "eligible", deadline: "Within 1 year of Let Export Order", authority: "DGFT via ICEGATE", note: "Electronic scrip credited to ICEGATE account. Can be sold or used for duty payment." },
+    { name: "Duty Drawback", amount: drawback, rate: `${drawbackRate}% of FOB`, status: "eligible", deadline: "Within 3 months of export (extendable)", authority: "Customs via ICEGATE", note: "Auto-credited if shipping bill filed correctly. Check DBK schedule for exact rate." },
+    { name: "IGST Refund (Input)", amount: igstRefund, rate: `${igstRate}% on inputs`, status: "eligible", deadline: "With GST return filing", authority: "GST Portal", note: "Refund of IGST paid on procurement. File in GSTR-1 as export with payment of IGST." },
+  ];
+
+  return (<div>
+    <div className="cd2"><h3>💰 Post-Shipment Recovery</h3>
+      <p style={{ fontSize: 12, color: "var(--t2)", marginTop: -8, marginBottom: 14 }}>Money owed to you after shipment · Don't leave it on the table</p>
+      <div className="sc" style={{ borderLeft: "3px solid var(--g)", marginBottom: 16 }}>
+        <div className="scl">Total Recoverable</div>
+        <div className="scv" style={{ color: "var(--g)" }}>{fI(total)}</div>
+        <div className="scs">{((total / (deal.capital_deployed_inr || 1)) * 100).toFixed(1)}% of deployed capital · 3 incentive schemes</div>
+      </div>
+      {items.map((item, i) => <div className="bc" key={i}>
+        <div className="bch"><div><div className="bcn">{item.name}</div><div className="bcc">{item.rate} · {item.authority}</div></div>
+          <div style={{ textAlign: "right" }}><div style={{ font: "700 18px var(--m)", color: "var(--g)" }}>{fI(item.amount)}</div>
+            <div style={{ font: "9px var(--f)", color: "var(--t3)" }}>${(item.amount / 85).toFixed(0)} USD</div></div>
+        </div>
+        <div className="dg" style={{ marginBottom: 8 }}>
+          <div className="di"><span className="dil">Status</span><span className="div" style={{ color: "var(--ac)" }}>{item.status}</span></div>
+          <div className="di"><span className="dil">Deadline</span><span className="div" style={{ fontFamily: "var(--f)", fontSize: 10 }}>{item.deadline}</span></div>
+        </div>
+        <p style={{ fontSize: 10, color: "var(--t2)", fontStyle: "italic" }}>{item.note}</p>
+      </div>)}
+      <div style={{ background: "var(--b1)", borderRadius: 8, padding: 14, fontSize: 12, color: "var(--t2)", lineHeight: 1.6 }}>
+        <strong style={{ color: "var(--r)" }}>Warning:</strong> Most Indian exporters lose 3-7% of annual revenue by not claiming these incentives. On this deal alone, that's {fI(total)} — more than your freight cost. File within deadlines.
+      </div>
+    </div>
+    <div className="cd2"><h3>📋 eBRC & Bank Realisation</h3>
+      {[{ n: "Bank realisation of export proceeds", d: "AD bank confirms receipt of USD payment" }, { n: "eBRC filing on DGFT", d: "Electronic Bank Realisation Certificate — required for RoDTEP" }, { n: "RoDTEP claim on ICEGATE", d: "File against shipping bill number" }, { n: "Duty drawback credit check", d: "Auto-credited 15-30 days after LEO if SB is correct" }, { n: "GST refund claim (GSTR-1)", d: "File export invoice in monthly GST return" }].map((item, i) =>
+        <div className="doc" key={i}><div className="dst dns" /><div className="dtx"><div className="dtn">{item.n}</div><div className="dta">{item.d}</div></div></div>)}
+    </div>
+  </div>);
+}
+
+/* ═══ FX MODULE (TIER 2) ═══ */
+function FxMod({ deal }) {
+  const [rates, sR] = useState([]); const [ld, sLd] = useState(true);
+  useEffect(() => { (async () => {
+    const r = await sbGet("fx_rates", "?base_currency=eq.USD&target_currency=eq.INR&order=recorded_at.desc&limit=5");
+    sR(r || []); sLd(false);
+  })(); }, []);
+
+  const fobUsd = deal.fob_price_total_usd || 0;
+  const latest = rates[0] || { spot_rate: 85, forward_30d: 85.3, forward_60d: 85.6, forward_90d: 85.9 };
+  const prev = rates[1] || latest;
+  const change = ((latest.spot_rate - prev.spot_rate) / prev.spot_rate * 100).toFixed(2);
+  const isWeakening = change > 0;
+
+  const spotInr = fobUsd * latest.spot_rate;
+  const fwd30Inr = fobUsd * (latest.forward_30d || latest.spot_rate);
+  const fwd60Inr = fobUsd * (latest.forward_60d || latest.spot_rate);
+  const fwd90Inr = fobUsd * (latest.forward_90d || latest.spot_rate);
+
+  if (ld) return <div><div className="sp" /><p className="mu">Loading FX rates...</p></div>;
+  return (<div>
+    <div className="cd2"><h3>💱 FX & Hedging — USD/INR</h3>
+      <div className="s3" style={{ marginBottom: 16 }}>
+        <div className="sc" style={{ borderLeft: "3px solid var(--ac)" }}><div className="scl">Spot Rate</div><div className="scv" style={{ color: "var(--ac)" }}>₹{latest.spot_rate}</div>
+          <div className="scs" style={{ color: isWeakening ? "var(--g)" : "var(--r)" }}>{isWeakening ? "▲ INR weakening" : "▼ INR strengthening"} ({change}%)</div></div>
+        <div className="sc"><div className="scl">30d Forward</div><div className="scv" style={{ color: "var(--bl)" }}>₹{latest.forward_30d}</div><div className="scs">Premium: ₹{(latest.forward_30d - latest.spot_rate).toFixed(2)}</div></div>
+        <div className="sc"><div className="scl">90d Forward</div><div className="scv" style={{ color: "var(--bl)" }}>₹{latest.forward_90d}</div><div className="scs">Premium: ₹{(latest.forward_90d - latest.spot_rate).toFixed(2)}</div></div>
+      </div>
+      <div className="ds"><h4>Your USD Exposure — ${fobUsd.toLocaleString()}</h4>
+        <div className="dg">
+          <div className="di"><span className="dil">At Spot (today)</span><span className="div" style={{ color: "var(--ac)" }}>{fI(spotInr)}</span></div>
+          <div className="di"><span className="dil">At 30d Forward</span><span className="div">{fI(fwd30Inr)}</span></div>
+          <div className="di"><span className="dil">At 60d Forward</span><span className="div">{fI(fwd60Inr)}</span></div>
+          <div className="di"><span className="dil">At 90d Forward</span><span className="div">{fI(fwd90Inr)}</span></div>
+          <div className="di"><span className="dil">Gain if INR weakens 1%</span><span className="div" style={{ color: "var(--g)" }}>{fI(spotInr * 0.01)}</span></div>
+          <div className="di"><span className="dil">Loss if INR strengthens 1%</span><span className="div" style={{ color: "var(--r)" }}>{fI(spotInr * 0.01)}</span></div>
+        </div>
+      </div>
+      <div style={{ background: "var(--b1)", borderRadius: 8, padding: 14, fontSize: 12, color: "var(--t2)", lineHeight: 1.6 }}>
+        <strong style={{ color: "var(--ac)" }}>Hedging Advice:</strong> {isWeakening
+          ? `INR is weakening — favorable for exporters. Your receivable of $${fobUsd.toLocaleString()} is worth more each day. Consider NOT hedging if you expect this trend to continue, or book a partial forward (50%) to lock some gains.`
+          : `INR is strengthening — risky for exporters. Your $${fobUsd.toLocaleString()} receivable loses ₹${Math.round(spotInr * 0.01).toLocaleString()} for every 1% move. Consider booking a forward contract at ₹${latest.forward_30d} to lock your margin.`}
+      </div>
+    </div>
+  </div>);
+}
+
 /* ═══ DEAL WORKSPACE ═══ */
 function DealWS({ deal, trader, lane, onBack, onUpd }) {
   const ci = PL.findIndex(s => s.k === deal.status);
   const [tab, sT] = useState("overview");
   const linkBuyer = async b => {
     const u = await sbPatch("deals", deal.id, { buyer_id: b.id, status: "buyer_shortlisted", state_history: JSON.stringify([...jp(deal.state_history), { state: "buyer_shortlisted", at: new Date().toISOString(), note: `Buyer: ${b.company_name}` }]) });
+    if (u?.length) onUpd(u[0]);
+  };
+  const linkSupplier = async s => {
+    const u = await sbPatch("deals", deal.id, { supplier_id: s.id, state_history: JSON.stringify([...jp(deal.state_history), { state: "supplier_identified", at: new Date().toISOString(), note: `Supplier: ${s.name}` }]) });
     if (u?.length) onUpd(u[0]);
   };
   return (<div>
@@ -314,10 +792,10 @@ function DealWS({ deal, trader, lane, onBack, onUpd }) {
       <div className="sc"><div className="scl">Quantity</div><div className="scv" style={{ color: "var(--bl)" }}>{((deal.quantity_kg || 0) / 1000).toFixed(1)}T</div></div>
       <div className="sc"><div className="scl">Profit</div><div className="scv" style={{ color: "var(--g)" }}>{fI(deal.profit_inr || 0)}</div><div className="scs">{deal.expected_margin_pct}%</div></div>
     </div>
-    <div className="tb">{[{ k: "overview", l: "Overview" }, { k: "buyers", l: "🔍 Buyers" }, { k: "pricing", l: "💰 Pricing" }, { k: "compliance", l: "📋 Compliance" }].map(t => <button key={t.k} className={`ti ${tab === t.k ? "a" : ""}`} onClick={() => sT(t.k)}>{t.l}</button>)}</div>
+    <div className="tb">{[{ k: "overview", l: "Overview" }, { k: "buyers", l: "🔍 Buyers" }, { k: "suppliers", l: "🏭 Suppliers" }, { k: "pricing", l: "💰 Pricing" }, { k: "logistics", l: "🚢 Logistics" }, { k: "payment", l: "🔒 Payment" }, { k: "compliance", l: "📋 Compliance" }, { k: "docs", l: "📄 Docs" }, { k: "recovery", l: "🎁 Recovery" }, { k: "fx", l: "💱 FX" }].map(t => <button key={t.k} className={`ti ${tab === t.k ? "a" : ""}`} onClick={() => sT(t.k)}>{t.l}</button>)}</div>
     {tab === "overview" && <div>
       <div className="cd2"><h3>🎯 Next Actions</h3>
-        {[{ i: "🔍", l: "Find Buyers", d: `Discover importers in ${deal.destination_country}`, t: "buyers" }, { i: "💰", l: "Compute Pricing", d: "Floor / Market / Ceiling analysis", t: "pricing" }, { i: "📋", l: "Compliance", d: "Document checklist + tracking", t: "compliance" }, { i: "🏭", l: "Find Suppliers", d: "Mandi prices (coming soon)" }, { i: "🚢", l: "Logistics", d: "Freight + booking (coming soon)" }, { i: "🔒", l: "Payment Security", d: "ECGC + LC (coming soon)" }].map((a, i) =>
+        {[{ i: "🔍", l: "Find Buyers", d: `Discover importers in ${deal.destination_country}`, t: "buyers" }, { i: "🏭", l: "Find Suppliers", d: "Mandi prices + landed cost comparison", t: "suppliers" }, { i: "💰", l: "Compute Pricing", d: "Floor / Market / Ceiling analysis", t: "pricing" }, { i: "🚢", l: "Plan Logistics", d: "Freight rates, routing, container booking", t: "logistics" }, { i: "🔒", l: "Payment Security", d: "ECGC, LC, payment terms", t: "payment" }, { i: "📋", l: "Compliance", d: "Document checklist + tracking", t: "compliance" }, { i: "📄", l: "Generate Documents", d: "PI, CI, Packing List — auto-filled", t: "docs" }, { i: "🎁", l: "Post-Shipment Recovery", d: "RoDTEP, drawback, IGST refund", t: "recovery" }, { i: "💱", l: "FX & Hedging", d: "Live rates, exposure, hedge advice", t: "fx" }].map((a, i) =>
           <div className="ai" key={i} onClick={() => a.t && sT(a.t)}><span className="aii">{a.i}</span><div className="ait"><div className="atl">{a.l}</div><div className="atd">{a.d}</div></div><span style={{ color: "var(--t3)", fontSize: 13 }}>{a.t ? "→" : "🔒"}</span></div>)}
       </div>
       <div className="cd2"><h3>📊 Deal Economics</h3><div className="dg">
@@ -326,20 +804,76 @@ function DealWS({ deal, trader, lane, onBack, onUpd }) {
       </div></div>
     </div>}
     {tab === "buyers" && <BuyerMod deal={deal} lane={lane} onLink={linkBuyer} />}
+    {tab === "suppliers" && <SupplierMod deal={deal} lane={lane} onLinkSupplier={linkSupplier} />}
     {tab === "pricing" && <PriceMod deal={deal} lane={lane} cap={deal.capital_deployed_inr || trader.available_capital} />}
+    {tab === "logistics" && <LogisticsMod deal={deal} lane={lane} />}
+    {tab === "payment" && <PaymentMod deal={deal} lane={lane} trader={trader} />}
     {tab === "compliance" && <CompMod deal={deal} />}
+    {tab === "docs" && <DocGenMod deal={deal} trader={trader} lane={lane} />}
+    {tab === "recovery" && <RecoveryMod deal={deal} />}
+    {tab === "fx" && <FxMod deal={deal} />}
+  </div>);
+}
+
+/* ═══ DASHBOARD (TIER 2/3) ═══ */
+function Dashboard({ trader, deals, onDealClick, onNewDeal }) {
+  const active = deals.filter(d => d.status !== "deal_closed");
+  const closed = deals.filter(d => d.status === "deal_closed");
+  const totalDeployed = deals.reduce((a, d) => a + (d.capital_deployed_inr || 0), 0);
+  const totalProfit = deals.reduce((a, d) => a + (d.profit_inr || 0), 0);
+  const totalRevenue = deals.reduce((a, d) => a + ((d.fob_price_total_usd || 0) * 85), 0);
+
+  return (<div>
+    <div className="rh"><h2>Dashboard</h2><p>{trader?.name} · {deals.length} deals · {active.length} active</p></div>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 20 }}>
+      <div className="sc"><div className="scl">Total Capital</div><div className="scv" style={{ color: "var(--ac)" }}>{fI(trader?.available_capital || 0)}</div></div>
+      <div className="sc"><div className="scl">Deployed</div><div className="scv" style={{ color: "var(--bl)" }}>{fI(totalDeployed)}</div><div className="scs">{deals.length} deals</div></div>
+      <div className="sc"><div className="scl">Expected Profit</div><div className="scv" style={{ color: "var(--g)" }}>{fI(totalProfit)}</div><div className="scs">All deals combined</div></div>
+      <div className="sc"><div className="scl">Revenue Pipeline</div><div className="scv" style={{ color: "var(--ac)" }}>{fI(totalRevenue)}</div></div>
+    </div>
+
+    <div className="cd2"><h3>📊 Active Deals ({active.length})</h3>
+      {active.length === 0 && <p style={{ fontSize: 13, color: "var(--t3)", padding: 20, textAlign: "center" }}>No active deals yet. Find a trade lane to start your first deal.</p>}
+      {active.map(d => {
+        const ci = PL.findIndex(s => s.k === d.status);
+        const progress = ((ci + 1) / PL.length * 100).toFixed(0);
+        return (<div className="bc" key={d.id} onClick={() => onDealClick(d)} style={{ cursor: "pointer" }}>
+          <div className="bch"><div>
+            <div className="bcn">{d.product_name} → {d.destination_country}</div>
+            <div className="bcc">{d.deal_number} · {PL[ci]?.i} {PL[ci]?.l}</div></div>
+            <div style={{ textAlign: "right" }}><div style={{ font: "700 16px var(--m)", color: "var(--g)" }}>{fI(d.profit_inr || 0)}</div>
+              <div style={{ font: "9px var(--f)", color: "var(--t3)" }}>{d.expected_margin_pct}% margin</div></div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6, marginBottom: 8 }}>
+            <div className="bmi"><div className="bmil">Capital</div><div className="bmiv">{fI(d.capital_deployed_inr || 0)}</div></div>
+            <div className="bmi"><div className="bmil">Quantity</div><div className="bmiv">{((d.quantity_kg || 0) / 1000).toFixed(1)}T</div></div>
+            <div className="bmi"><div className="bmil">Progress</div><div className="bmiv" style={{ color: "var(--ac)" }}>{progress}%</div></div>
+          </div>
+          <div style={{ height: 4, background: "var(--b3)", borderRadius: 2, overflow: "hidden" }}>
+            <div style={{ height: "100%", width: `${progress}%`, background: "linear-gradient(90deg,var(--ac),var(--g))", borderRadius: 2 }} /></div>
+        </div>);
+      })}
+    </div>
+
+    <button className="ab" onClick={onNewDeal} style={{ marginTop: 8 }}>+ Find New Trade Lane</button>
   </div>);
 }
 
 /* ═══ MAIN ═══ */
 function App() {
   const [scr, sS] = useState("ob"); const [tr, sT] = useState(null); const [lanes, sL] = useState([]); const [exp, sE] = useState(null); const [ld, sLd] = useState(false); const [deal, sD] = useState(null); const [dLane, sDL] = useState(null);
+  const [allDeals, sAD] = useState([]);
   const load = async t => { sLd(true); const l = await sbGet("trade_lanes", `?min_capital_required_inr=lte.${t.available_capital}&order=opportunity_score.desc`); sL(l || []); sLd(false); };
-  const onboard = t => { sT(t); sS("res"); load(t); };
+  const loadDeals = async t => { const d = await sbGet("deals", `?trader_id=eq.${t.id}&order=created_at.desc`); sAD(d || []); };
+  const onboard = t => { sT(t); loadDeals(t); sS("dash"); load(t); };
   const accept = async (lane, qty, prof) => {
     const dn = `DEAL-${new Date().getFullYear()}-${String(Math.floor(Math.random() * 9000) + 1000)}`;
     const r = await sbPost("deals", { trader_id: tr.id, trade_lane_id: lane.id, deal_number: dn, status: "trade_lane_analyzed", product_name: lane.product_name, hs_code: lane.hs_code, destination_country: lane.destination_country, quantity_kg: qty, procurement_cost_per_kg_inr: lane.avg_procurement_cost_per_kg_inr, procurement_cost_total_inr: qty * lane.avg_procurement_cost_per_kg_inr, fob_price_per_kg_usd: lane.avg_fob_price_per_kg_usd, fob_price_total_usd: qty * lane.avg_fob_price_per_kg_usd, expected_margin_pct: lane.estimated_margin_pct, capital_deployed_inr: tr.available_capital, profit_inr: prof, origin_port: lane.nearest_port, incoterm: "FOB", state_history: JSON.stringify([{ state: "trade_lane_analyzed", at: new Date().toISOString(), note: "Accepted" }]) });
-    if (r?.length) { sD(r[0]); sDL(lane); sS("deal"); }
+    if (r?.length) { sD(r[0]); sDL(lane); sAD(prev => [r[0], ...prev]); sS("deal"); }
+  };
+  const openDeal = async d => {
+    const lanes = await sbGet("trade_lanes", `?id=eq.${d.trade_lane_id}`);
+    sD(d); sDL(lanes?.[0] || null); sS("deal");
   };
 
   const capBrkdn = cap => {
@@ -385,15 +919,19 @@ function App() {
 
   return (<><style>{css}</style><div className="A">
     <div className="H"><div className="Hl"><div className="Hm">T</div><div><div className="Ht">TradeOS Autopilot</div><div className="Hs">Autonomous Trade Execution</div></div></div>
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>{tr && <><div className="Hd" /><span className="Hr">{tr.name} · {fI(tr.available_capital)}</span></>}</div></div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        {tr && scr !== "ob" && <button className="bk" onClick={() => sS("dash")} style={{ fontSize: 11, padding: "5px 10px" }}>Dashboard</button>}
+        {tr && <><div className="Hd" /><span className="Hr">{tr.name} · {fI(tr.available_capital)}</span></>}
+      </div></div>
     {scr === "ob" && <Onboarding onDone={onboard} />}
+    {scr === "dash" && <Dashboard trader={tr} deals={allDeals} onDealClick={openDeal} onNewDeal={() => sS("res")} />}
     {scr === "res" && ld && <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "60vh" }}><div className="sp" /><p className="mu">Analyzing {fI(tr?.available_capital || 0)} across trade lanes...</p></div>}
     {scr === "res" && !ld && <div>
       <div className="rh"><h2>Trade Lanes for {fI(tr?.available_capital || 0)}</h2><p>{lanes.length} viable lanes · Ranked by opportunity score</p></div>
       {capBrkdn(tr?.available_capital || 0)}
       {lanes.map((l, i) => laneCard(l, i))}
     </div>}
-    {scr === "deal" && deal && <DealWS deal={deal} trader={tr} lane={dLane} onBack={() => sS("res")} onUpd={d => sD(d)} />}
+    {scr === "deal" && deal && <DealWS deal={deal} trader={tr} lane={dLane} onBack={() => { loadDeals(tr); sS("dash"); }} onUpd={d => sD(d)} />}
   </div></>);
 }
 
